@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Run the voice assistant
-bash scripts/start.sh            # 薄壳：校验 .venv 后 exec .venv/bin/python -m voice.main
-.venv/bin/python -m voice.main   # 直接跑（无需激活环境；config/日志路径基于项目根，任意 CWD 可运行）
+bash scripts/start.sh            # 薄壳：自定位仓库根（可从任意目录启动）→ exec .venv/bin/python -m voice.main
+.venv/bin/python -m voice.main   # 直接跑（无需激活环境；config/日志路径基于项目根）。需在仓库根目录执行
 
 # Install dependencies
 bash scripts/install.sh

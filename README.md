@@ -106,14 +106,15 @@ backend:
 bash scripts/install.sh
 
 # 2. 启动（默认后端为 hermes；Hermes Gateway 由 daemon 启动时自动确保运行）
-bash scripts/start.sh
+bash scripts/start.sh            # 可从任意目录调用（脚本自定位仓库根）
 
-#    也可以直接（无需激活环境，config/日志路径与 CWD 无关）：
+#    直接跑 daemon（无需激活环境；config/日志路径基于项目根）——
+#    但需在仓库根目录执行，或用上面的 start.sh 以支持任意目录：
 #    .venv/bin/python -m voice.main
 ```
 
-直接跑也等价——`start.sh` 只是薄壳（校验 .venv 后 exec）。Hermes 之外的云端后端，
-按上面的 `backend:` 示例配好环境变量即可。
+`start.sh` 只是薄壳（自定位仓库根 → exec venv python），所以**任意 CWD 都能启动**。
+Hermes 之外的云端后端，按上面的 `backend:` 示例配好环境变量即可。
 
 ## 测试
 
