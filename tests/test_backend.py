@@ -145,7 +145,8 @@ def test_hermes_reads_legacy_env(monkeypatch):
     assert _resolve_key({}, fallback_env="HERMES_API_KEY", default="hermes-voice-key") == "custom-key"
 
 
-def test_hermes_sync_env_file_writes_defaults(tmp_path):
+def test_hermes_sync_env_file_writes_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
     env = tmp_path / ".env"
     b = HermesBackend(
         {"type": "hermes", "base_url": "http://localhost:8642"},
@@ -158,7 +159,8 @@ def test_hermes_sync_env_file_writes_defaults(tmp_path):
     assert "API_SERVER_KEY=hermes-voice-key" in text
 
 
-def test_hermes_sync_env_file_idempotent(tmp_path):
+def test_hermes_sync_env_file_idempotent(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
     env = tmp_path / ".env"
     env.write_text(
         "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=hermes-voice-key\n", encoding="utf-8"
