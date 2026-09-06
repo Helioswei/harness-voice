@@ -16,7 +16,7 @@ import zhconv
 from .av_recorder import AVRecorder
 from .stt_engine import create_stt_engine
 from .wake_word_engine import WakeWordEngine
-from .hermes_client import HermesClient
+from .backend import BackendError, create_backend
 from .tts import TTSEngine
 
 logger = logging.getLogger("hermes-voice")
@@ -50,7 +50,14 @@ class ColoredFormatter(logging.Formatter):
         )
 
 
-def load_config(path="config.yaml"):
+def _project_root():
+    """项目根目录（voice/ 的上一级），保证任意 CWD 可运行。"""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_config(path=None):
+    if path is None:
+        path = os.path.join(_project_root(), "config.yaml")
     with open(path) as f:
         cfg = yaml.safe_load(f)
 
@@ -119,8 +126,6 @@ def validate_config(cfg):
     required = {
         "samplerate": (int, float),
         "silence_timeout": (int, float),
-        "hermes_url": str,
-        "hermes_api_key": str,
     }
     for key, expected_type in required.items():
         if key not in cfg:
@@ -179,11 +184,16 @@ def main():
         keywords=wake_words,
         threshold=config.get("kws_threshold", 0.25),
     )
-    hermes = HermesClient(
-        base_url=config.get("hermes_url", "http://localhost:8642"),
-        api_key=config["hermes_api_key"],
-        timeout=config.get("hermes_timeout", 120),
-    )
+    backend = create_backend(config)
+    try:
+        backend.prepare()
+    except BackendError as exc:
+        # 配置级致命错误（如 file 路径不可写 / openai 缺 base_url）：中止
+        logger.critical("后端准备失败: %s", exc)
+        sys.exit(1)
+    except Exception:
+        logger.exception("后端 prepare 异常，继续以当前配置启动")
+    logger.info("后端 → %s (%s)", backend.name, getattr(backend, "base_url", ""))
     tts = TTSEngine()
 
     def _speak_and_recover(recorder, tts, text):
@@ -217,7 +227,33 @@ def main():
 
         return None
 
-    def _process_interruption(recorder, stt, hermes, tts, interrupted_audio):
+    def _handle_turn(recorder, stt, backend, text):
+        """Route one transcribed utterance through the active backend.
+
+        Returns interrupted audio (speech captured during TTS barge-in) if a
+        spoken reply was given and cut short, else None.
+        """
+        try:
+            reply = backend.handle(text)
+        except ConnectionError as exc:
+            logger.warning("后端不可达 (%s)", exc)
+            tts.speak("后端服务不可达，请检查配置或网络")
+            return None
+        except BackendError as exc:
+            logger.error("后端处理失败: %s", exc)
+            tts.speak(str(exc) or "处理失败，请查看日志")
+            return None
+
+        reply = _renew_if_pending(recorder, stt, backend, reply)
+
+        if reply:
+            logger.info("朗读 → %s", reply)
+            return _speak_and_recover(recorder, tts, reply)
+        # 无文字回复（file 听写）：响一声确认，不朗读
+        play_beep()
+        return None
+
+    def _process_interruption(recorder, stt, backend, tts, interrupted_audio):
         """Transcribe and respond to audio captured during TTS barge-in.
 
         Uses the already-captured *interrupted_audio* directly. Handles
@@ -232,25 +268,16 @@ def main():
             return
 
         logger.info("打断→ %s", text)
-        try:
-            reply = hermes.send(text)
-            reply = _renew_if_pending(recorder, stt, hermes, reply)
-            logger.info("API → %s", reply)
-            more_audio = _speak_and_recover(recorder, tts, reply)
-            if more_audio is not None:
-                _process_interruption(recorder, stt, hermes, tts, more_audio)
-        except ConnectionError:
-            logger.warning("打断处理: Hermes API 不可达")
+        more_audio = _handle_turn(recorder, stt, backend, text)
+        if more_audio is not None:
+            _process_interruption(recorder, stt, backend, tts, more_audio)
 
-    def _renew_if_pending(recorder, stt, hermes, current_reply):
+    def _renew_if_pending(recorder, stt, backend, current_reply):
         """If VAD captured speech during last blocking call, re-request.
 
-        When ``hermes.send()`` takes many seconds (tool calls, slow LLM),
-        the user may have spoken in the meantime. VAD completed their
-        utterance and stored it in ``_utterance_result``.  This function
-        consumes that audio, transcribes it, and makes a new API call so
-        the assistant responds to what the user *actually* just said,
-        not to the stale context.
+        Consumes audio VAD stored while ``backend.handle()`` blocked (slow
+        LLM / tool calls), transcribes it, and makes a fresh request so the
+        assistant answers what the user *actually* just said.
         """
         audio = recorder.consume_utterance()
         if audio is None:
@@ -260,9 +287,7 @@ def main():
             return current_reply
         logger.info("等待期间→ %s", text)
         try:
-            new_reply = hermes.send(text)
-            logger.info("API → %s", new_reply)
-            return new_reply
+            return backend.handle(text)
         except ConnectionError:
             return current_reply
 
@@ -279,7 +304,7 @@ def main():
         tts.stop()
         recorder.stop()
         kws.close()
-        hermes.close()
+        backend.close()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -300,7 +325,9 @@ def main():
                 recorder.set_wake_hook(None)
                 kws.reset()
                 play_beep()
-                tts.speak("我在")
+                greeting = config.get("wake_greeting", "我在")
+                if greeting:
+                    tts.speak(greeting)
 
                 logger.info("唤醒词 → 检测到\"%s\"，等待指令 …", detected)
 
@@ -317,15 +344,12 @@ def main():
 
                 logger.info("麦克风→ %s", text)
 
-                reply = hermes.send(text)
-                reply = _renew_if_pending(recorder, stt, hermes, reply)
-                logger.info("朗读 → %s", reply)
-                interrupted = _speak_and_recover(recorder, tts, reply)
+                interrupted = _handle_turn(recorder, stt, backend, text)
                 state = "AWAKE"
                 recorder.start()
                 logger.info("状态机 → 进入跟随时窗 (%.0f秒)",
                             session_timeout)
-                _process_interruption(recorder, stt, hermes, tts, interrupted)
+                _process_interruption(recorder, stt, backend, tts, interrupted)
 
             elif state == "AWAKE":
                 audio = recorder.read_utterance(
@@ -334,7 +358,7 @@ def main():
 
                 if audio is None:
                     logger.info("状态机 → 跟随时窗超时，回到待唤醒")
-                    hermes.clear_context()
+                    backend.clear_context()
                     state = "LISTENING"
                     continue
 
@@ -344,15 +368,12 @@ def main():
 
                 logger.info("麦克风→ %s", text)
 
-                reply = hermes.send(text)
-                reply = _renew_if_pending(recorder, stt, hermes, reply)
-                logger.info("朗读 → %s", reply)
-                interrupted = _speak_and_recover(recorder, tts, reply)
-                _process_interruption(recorder, stt, hermes, tts, interrupted)
+                interrupted = _handle_turn(recorder, stt, backend, text)
+                _process_interruption(recorder, stt, backend, tts, interrupted)
 
         except ConnectionError as e:
             logger.warning("Hermes API 不可达 (%s)，回到待唤醒", e)
-            tts.speak("请先启动 Hermes 服务")
+            tts.speak("后端服务不可达，请检查配置或网络")
             state = "LISTENING"
 
         except KeyboardInterrupt:
@@ -363,7 +384,7 @@ def main():
             state = "LISTENING"
 
     recorder.stop()
-    hermes.close()
+    backend.close()
 
 
 if __name__ == "__main__":
