@@ -236,6 +236,9 @@ def main():
         try:
             reply = backend.handle(text)
         except ConnectionError as exc:
+            # 后端失败在此吞掉并返回 None，不向上抛：调用方保持当前状态——
+            # AWAKE 跟随时窗继续敞开，下一句直接重试、无需重新唤醒；
+            # 安静空闲仍会超时自然回到 LISTENING。
             logger.warning("后端不可达 (%s)", exc)
             tts.speak("后端服务不可达，请检查配置或网络")
             return None
@@ -370,11 +373,6 @@ def main():
 
                 interrupted = _handle_turn(recorder, stt, backend, text)
                 _process_interruption(recorder, stt, backend, tts, interrupted)
-
-        except ConnectionError as e:
-            logger.warning("Hermes API 不可达 (%s)，回到待唤醒", e)
-            tts.speak("后端服务不可达，请检查配置或网络")
-            state = "LISTENING"
 
         except KeyboardInterrupt:
             break

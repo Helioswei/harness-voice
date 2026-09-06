@@ -88,11 +88,11 @@ class _OpenAIChat(Backend):
                 headers=headers,
             )
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data = resp.json()
+            reply = data["choices"][0]["message"]["content"]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
             self.messages.pop()
             raise ConnectionError(f"Backend request failed: {exc}") from exc
-        data = resp.json()
-        reply = data["choices"][0]["message"]["content"]
         self.messages.append({"role": "assistant", "content": reply})
         return reply
 
@@ -184,22 +184,34 @@ class HermesBackend(_OpenAIChat):
         text = ""
         if self.hermes_env.exists():
             text = self.hermes_env.read_text(encoding="utf-8")
-        lines = text.splitlines()
-        has_enabled = "API_SERVER_ENABLED=true" in text
         key_line = f"API_SERVER_KEY={self.api_key}"
-        if not has_enabled:
-            lines.append("")
-            lines.append("# Hermes API Server (auto-configured by voice backend)")
+        lines = []
+        found_enabled = found_key = False
+        for line in text.splitlines():
+            if line.startswith("API_SERVER_ENABLED="):
+                lines.append("API_SERVER_ENABLED=true")
+                if line != "API_SERVER_ENABLED=true":
+                    changed = True
+                found_enabled = True
+            elif line.startswith("API_SERVER_KEY="):
+                lines.append(key_line)
+                if line != key_line:
+                    changed = True
+                found_key = True
+            else:
+                lines.append(line)
+        if not found_enabled:
             lines.append("API_SERVER_ENABLED=true")
             changed = True
-        if key_line not in text:
-            lines = [key_line if l.startswith("API_SERVER_KEY=") else l for l in lines]
-            if key_line not in lines:
-                lines.append(key_line)
+        if not found_key:
+            lines.append(key_line)
             changed = True
         if changed:
             self.hermes_env.parent.mkdir(parents=True, exist_ok=True)
-            self.hermes_env.write_text("\n".join(lines).lstrip("\n") + "\n", encoding="utf-8")
+            content = "\n".join(lines)
+            if content:
+                content += "\n"
+            self.hermes_env.write_text(content, encoding="utf-8")
         return changed
 
     def _hermes_cli(self, args):

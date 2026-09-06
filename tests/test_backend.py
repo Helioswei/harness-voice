@@ -74,6 +74,22 @@ def test_network_error_maps_to_connection_error():
     assert b.messages == []  # 失败时已回滚 user 消息
 
 
+def test_http_200_with_error_body_rolls_back_and_raises():
+    # 200 但响应体不带 choices（错误体）也必须回滚并抛 ConnectionError，
+    # 不能把畸形内容当作 assistant 回复追加进上下文。
+    handler, cap = make_handler(status=200, body={"error": {"message": "boom"}})
+    b = OpenAIBackend(
+        {"type": "openai", "base_url": "http://x", "model": "m"},
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        b.handle("hi")
+        assert False, "应抛出 ConnectionError"
+    except ConnectionError:
+        pass
+    assert b.messages == []
+
+
 def test_resolve_key_precedence(monkeypatch):
     # 1) api_key 优先于 env
     assert _resolve_key({"api_key": "cfg", "api_key_env": "KKK"}) == "cfg"
@@ -169,6 +185,20 @@ def test_hermes_sync_env_file_idempotent(tmp_path, monkeypatch):
     assert b._sync_env_file() is False  # 无改动
     b.api_key = "changed-key"
     assert b._sync_env_file() is True
+
+
+def test_hermes_sync_env_file_flips_false_to_true_in_place(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "API_SERVER_ENABLED=false\nAPI_SERVER_KEY=hermes-voice-key\n", encoding="utf-8"
+    )
+    b = HermesBackend({"type": "hermes"}, hermes_env=str(env))
+    assert b._sync_env_file() is True  # false→true 视为改动
+    text = env.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assert lines.count("API_SERVER_ENABLED=true") == 1
+    assert not [l for l in lines if l.startswith("API_SERVER_ENABLED=false")]
 
 
 def test_legacy_config_without_backend_block_defaults_to_hermes(tmp_path, monkeypatch):
