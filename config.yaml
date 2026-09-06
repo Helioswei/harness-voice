@@ -4,24 +4,53 @@ samplerate: 16000            # 音频采样率
 silence_timeout: 1.5         # VAD 静音判定秒数
 max_record_sec: 15           # 单次录音上限
 
+# ── 唤醒 ──────────────────────────────────────
+wake_greeting: "我在"        # 唤醒后朗读的话；留空 "" 则只响提示音
+
 # ── STT 语音转文字引擎 ────────────────────────
-# engine: whisper | 后续可扩展 sensevoice 等
 stt_engine: sensevoice
-stt_model_size: small          # tiny / base / small / medium
-stt_model_source: modelscope   # huggingface / modelscope / local
-stt_model_path: ""             # 本地模型路径（source=local 时使用）
+stt_model_size: small        # tiny / base / small / medium（whisper 引擎用）
+stt_model_source: modelscope # huggingface / modelscope / local
+stt_model_path: ""           # 本地模型路径（source=local 时使用）
 
 # ── 唤醒词 ─────────────────────────────────────
-kws_keywords:                 # 自定义唤醒词（可多个）
+kws_keywords:                # 自定义唤醒词（可多个）
   - "小九"
   - "轩轩"
-kws_threshold: 0.25           # 唤醒阈值（0.1-0.9，越高越严格）
+kws_threshold: 0.25          # 唤醒阈值（0.1-0.9，越高越严格）
 
-# ── Hermes API ─────────────────────────────────
-hermes_url: "http://localhost:8642"
-hermes_api_key: "hermes-voice-key"
-hermes_timeout: 120           # HTTP 请求超时（秒），天气/搜索等工具调用可能耗时较长
+# ── 后端（输出端：转写文字去哪）────────────────
+# type: hermes | openai | file
+#   hermes 本机 Hermes Gateway——prepare() 自动配置/确保运行（默认）
+#   openai 任意 OpenAI 兼容端点（DeepSeek/Ollama/llama.cpp…）；base_url 填 origin，协议固定 /v1/chat/completions
+#   file   落盘听写（写作）：每句追加一行，无回复朗读
+backend:
+  type: hermes
+  base_url: "http://localhost:8642"
+  model: "hermes-agent"
+  api_key_env: "HERMES_API_KEY"   # 从环境变量读 key；解析不到则不带鉴权头
+  timeout: 120                    # HTTP 请求超时（秒），工具调用可能耗时较长
 
-# ── TTS 打断（Barge-in） ──────────────────────────
-bargein_threshold: 0.55       # TTS 期间 VAD 阈值（0.0-1.0，越高越严格，实测0.65偏保守）
-bargein_duration: 0.5         # 打断确认时长（秒，咳嗽 <500ms 会被过滤）
+# 切换示例：把上面整个 backend 块替换为以下之一 ──
+#
+# # DeepSeek（云端，真 key 走环境变量，勿入库）
+# backend:
+#   type: openai
+#   base_url: "https://api.deepseek.com"
+#   model: "deepseek-chat"
+#   api_key_env: "DEEPSEEK_API_KEY"
+#
+# # 本地 Ollama（OpenAI 兼容，无需 key）
+# backend:
+#   type: openai
+#   base_url: "http://localhost:11434"
+#   model: "llama3.2"
+#
+# # 写作听写（落盘）
+# backend:
+#   type: file
+#   path: "~/Documents/voice-notes.md"
+
+# ── TTS 打断（Barge-in） ────────────────────────
+bargein_threshold: 0.55      # TTS 期间 VAD 阈值（0.0-1.0，越高越严格）
+bargein_duration: 0.5        # 打断确认时长（秒，咳嗽 <500ms 会被过滤）
