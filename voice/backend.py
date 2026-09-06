@@ -11,6 +11,9 @@ no path). Requests go to ``<base_url>/v1/chat/completions``.
 
 import logging
 import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import httpx
 
@@ -147,12 +150,103 @@ class FileBackend(Backend):
         return None
 
 
+class HermesBackend(_OpenAIChat):
+    """Local Hermes Gateway: OpenAI-compatible chat + lifecycle management.
+
+    ``prepare()`` idempotently provisions ~/.hermes/.env, (re)starts the
+    gateway when its config changed, ensures it is running, and health-checks
+    it — the logic formerly living in scripts/start.sh.
+    """
+
+    name = "hermes"
+
+    def __init__(self, cfg, transport=None, hermes_env=None):
+        key = _resolve_key(
+            cfg, fallback_env="HERMES_API_KEY", default="hermes-voice-key"
+        )
+        super().__init__(
+            base_url=cfg.get("base_url", "http://localhost:8642"),
+            model=cfg.get("model", "hermes-agent"),
+            api_key=key,
+            timeout=cfg.get("timeout", 120),
+            transport=transport,
+        )
+        self.hermes_env = Path(
+            hermes_env or os.path.join(os.path.expanduser("~"), ".hermes", ".env")
+        )
+
+    def _sync_env_file(self):
+        """Ensure API_SERVER_ENABLED=true and API_SERVER_KEY=self.api_key.
+
+        Returns True if the file changed.
+        """
+        changed = False
+        text = ""
+        if self.hermes_env.exists():
+            text = self.hermes_env.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        has_enabled = "API_SERVER_ENABLED=true" in text
+        key_line = f"API_SERVER_KEY={self.api_key}"
+        if not has_enabled:
+            lines.append("")
+            lines.append("# Hermes API Server (auto-configured by voice backend)")
+            lines.append("API_SERVER_ENABLED=true")
+            changed = True
+        if key_line not in text:
+            lines = [key_line if l.startswith("API_SERVER_KEY=") else l for l in lines]
+            if key_line not in lines:
+                lines.append(key_line)
+            changed = True
+        if changed:
+            self.hermes_env.parent.mkdir(parents=True, exist_ok=True)
+            self.hermes_env.write_text("\n".join(lines).lstrip("\n") + "\n", encoding="utf-8")
+        return changed
+
+    def _hermes_cli(self, args):
+        if not shutil.which("hermes"):
+            return None
+        try:
+            return subprocess.run(
+                ["hermes", *args],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            ).returncode
+        except Exception:
+            return None
+
+    def prepare(self):
+        if self._sync_env_file():
+            logger.info("Hermes API Server 配置已更新，重启 gateway …")
+            self._hermes_cli(["gateway", "restart"])
+        if self._hermes_cli(["gateway", "status"]) != 0:
+            logger.info("启动 Hermes Gateway …")
+            self._hermes_cli(["gateway", "start"])
+        # 健康检查（尽力而为，失败仅告警，交由运行时 ConnectionError 兜底）
+        try:
+            r = self._client.get(f"{self.base_url}/v1/health", timeout=5)
+            if r.status_code == 200:
+                logger.info("Hermes API Server 正常")
+            else:
+                logger.warning("Hermes API Server 健康检查非 200 (%s)", r.status_code)
+        except httpx.HTTPError:
+            logger.warning("Hermes API Server 无响应（可稍后随请求重试）")
+
+
 def create_backend(config):
     """Build the active backend from a full config dict."""
     bcfg = config.get("backend")
     if bcfg is None:
-        raise BackendError("config 缺少 backend 块")
-    kind = bcfg.get("type")
+        # 向后兼容：无 backend 块 → 顶层 hermes_* 老配置
+        bcfg = {
+            "type": "hermes",
+            "base_url": config.get("hermes_url", "http://localhost:8642"),
+            "api_key": config.get("hermes_api_key", ""),
+            "timeout": config.get("hermes_timeout", 120),
+        }
+    kind = bcfg.get("type", "hermes")
+    if kind == "hermes":
+        return HermesBackend(bcfg)
     if kind == "openai":
         return OpenAIBackend(bcfg)
     if kind == "file":

@@ -127,3 +127,53 @@ def test_file_prepare_rejects_unwritable_dir(tmp_path):
 def test_factory_returns_file_backend():
     b = create_backend({"backend": {"type": "file", "path": "/tmp/x.md"}})
     assert b.name == "file"
+
+
+from pathlib import Path
+
+from voice.backend import HermesBackend, _resolve_key, create_backend
+
+
+def test_hermes_key_defaults_when_nothing_set(monkeypatch):
+    for k in ("HERMES_API_KEY", "SOME_OTHER"):
+        monkeypatch.delenv(k, raising=False)
+    assert _resolve_key({}, fallback_env="HERMES_API_KEY", default="hermes-voice-key") == "hermes-voice-key"
+
+
+def test_hermes_reads_legacy_env(monkeypatch):
+    monkeypatch.setenv("HERMES_API_KEY", "custom-key")
+    assert _resolve_key({}, fallback_env="HERMES_API_KEY", default="hermes-voice-key") == "custom-key"
+
+
+def test_hermes_sync_env_file_writes_defaults(tmp_path):
+    env = tmp_path / ".env"
+    b = HermesBackend(
+        {"type": "hermes", "base_url": "http://localhost:8642"},
+        hermes_env=str(env),
+    )
+    changed = b._sync_env_file()
+    assert changed is True
+    text = env.read_text(encoding="utf-8")
+    assert "API_SERVER_ENABLED=true" in text
+    assert "API_SERVER_KEY=hermes-voice-key" in text
+
+
+def test_hermes_sync_env_file_idempotent(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "API_SERVER_ENABLED=true\nAPI_SERVER_KEY=hermes-voice-key\n", encoding="utf-8"
+    )
+    b = HermesBackend({"type": "hermes"}, hermes_env=str(env))
+    assert b._sync_env_file() is False  # 无改动
+    b.api_key = "changed-key"
+    assert b._sync_env_file() is True
+
+
+def test_legacy_config_without_backend_block_defaults_to_hermes(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    # hermes prepare 会碰 CLI；这里只验证 create_backend 合成默认后端类型
+    b = create_backend(
+        {"hermes_url": "http://localhost:8642", "hermes_api_key": "hermes-voice-key"}
+    )
+    assert b.name == "hermes"
+    assert b.base_url == "http://localhost:8642"
