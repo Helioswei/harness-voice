@@ -124,6 +124,29 @@ class OpenAIBackend(_OpenAIChat):
             raise BackendError("openai 后端缺少 base_url")
 
 
+class FileBackend(Backend):
+    """Dictation-to-file: append each utterance as one line, stay silent."""
+
+    name = "file"
+
+    def __init__(self, cfg):
+        self.path = os.path.expanduser(cfg.get("path", "~/voice-notes.txt"))
+
+    def prepare(self):
+        try:
+            open(self.path, "a", encoding="utf-8").close()
+        except OSError as exc:
+            raise BackendError(f"无法写入听写文件 {self.path}: {exc}")
+
+    def handle(self, text):
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(text.rstrip() + "\n")
+        except OSError as exc:
+            raise BackendError(f"写入听写文件失败 {self.path}: {exc}")
+        return None
+
+
 def create_backend(config):
     """Build the active backend from a full config dict."""
     bcfg = config.get("backend")
@@ -132,4 +155,6 @@ def create_backend(config):
     kind = bcfg.get("type")
     if kind == "openai":
         return OpenAIBackend(bcfg)
+    if kind == "file":
+        return FileBackend(bcfg)
     raise ValueError(f"Unknown backend type: {kind}")

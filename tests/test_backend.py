@@ -100,3 +100,30 @@ def test_factory_unknown_type_raises():
         assert False, "应抛 ValueError"
     except ValueError:
         pass
+
+
+from voice.backend import BackendError, FileBackend, create_backend
+
+
+def test_file_handle_appends_line_and_returns_none(tmp_path):
+    p = tmp_path / "notes.md"
+    b = FileBackend({"type": "file", "path": str(p)})
+    b.prepare()
+    assert b.handle("第一句") is None
+    assert b.handle("第二句") is None
+    assert p.read_text(encoding="utf-8") == "第一句\n第二句\n"
+
+
+def test_file_prepare_rejects_unwritable_dir(tmp_path):
+    missing = tmp_path / "no" / "such" / "notes.md"
+    b = FileBackend({"type": "file", "path": str(missing)})
+    try:
+        b.prepare()
+        assert False, "应抛 BackendError"
+    except BackendError:
+        pass
+
+
+def test_factory_returns_file_backend():
+    b = create_backend({"backend": {"type": "file", "path": "/tmp/x.md"}})
+    assert b.name == "file"
