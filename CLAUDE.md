@@ -26,8 +26,7 @@ No build system, no linter configured. Test framework: pytest (dev-only).
 **Harness Voice** — a macOS wake-word-activated *voice front-end* ("小九" wakes it), not tied to any
 single agent. Transcribed text goes to a pluggable **backend**: `hermes` (default, local Hermes
 Gateway) / `openai` (any OpenAI-compatible endpoint) / `file` (dictation to a local file). The
-logger + log file are `harness-voice`. The repo directory/GitHub name may still say `hermes-voice`
-(a not-yet-done rename); that's cosmetic.
+logger, log file, local directory, GitHub repo, and git remote are all `harness-voice`.
 
 Keep the backend concept "Hermes" where it means the backend/gateway (`backend.type: hermes`,
 `HERMES_API_KEY`, local handshake key literal `hermes-voice-key`, `~/.hermes`, `hermes gateway`).
