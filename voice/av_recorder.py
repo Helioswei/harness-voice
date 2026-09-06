@@ -10,7 +10,7 @@ from Foundation import NSRunLoop, NSDate
 import torch
 from silero_vad import load_silero_vad
 
-logger = logging.getLogger("hermes-voice")
+logger = logging.getLogger("harness-voice")
 
 
 class AVRecorder:

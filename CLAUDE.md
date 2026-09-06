@@ -6,58 +6,90 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Run the voice assistant
-python -m voice.main
-
-# One-shot start (auto-starts Hermes Gateway if needed)
-bash scripts/start.sh
+bash scripts/start.sh            # 薄壳：校验 .venv 后 exec .venv/bin/python -m voice.main
+.venv/bin/python -m voice.main   # 直接跑（无需激活环境；config/日志路径基于项目根，任意 CWD 可运行）
 
 # Install dependencies
 bash scripts/install.sh
 
-# Activate venv
+# Activate venv (only needed to use bare `python`/`pip`)
 source .venv/bin/activate
+
+# Tests (backend adapter layer — headless)
+.venv/bin/python -m pytest tests/      # 先 pip install -r requirements-dev.txt
 ```
 
-No build system, no test framework, no linter configured yet.
+No build system, no linter configured. Test framework: pytest (dev-only).
+
+## Project identity
+
+**Harness Voice** — a macOS wake-word-activated *voice front-end* ("小九" wakes it), not tied to any
+single agent. Transcribed text goes to a pluggable **backend**: `hermes` (default, local Hermes
+Gateway) / `openai` (any OpenAI-compatible endpoint) / `file` (dictation to a local file). The
+logger + log file are `harness-voice`. The repo directory/GitHub name may still say `hermes-voice`
+(a not-yet-done rename); that's cosmetic.
+
+Keep the backend concept "Hermes" where it means the backend/gateway (`backend.type: hermes`,
+`HERMES_API_KEY`, local handshake key literal `hermes-voice-key`, `~/.hermes`, `hermes gateway`).
+Only the project *identity* is "Harness Voice".
 
 ## Architecture
 
-Hermes Voice is a macOS wake-word-activated voice assistant daemon. The user says "小九" (Xiaojiu) to wake it, then speaks a command which is transcribed, sent to a local Hermes API server, and the reply is read aloud via macOS TTS.
-
-### State Machine
-
 Two states, managed in `voice/main.py`:
 
-- **LISTENING** (default) — VAD + faster-whisper tiny + text match for "小九". When detected, strips the wake-word prefix and submits text to Hermes.
-- **AWAKE** — 30-second follow-up window. Any speech is transcribed and submitted directly (no wake-word filtering). Each TTS reply resets the 30s timer. Timeout → back to LISTENING.
+- **LISTENING** (default) — KWS (Sherpa-ONNX) waits for a wake word. On hit: beep + optional
+  `wake_greeting` speech → VAD utterance → STT → route through backend → AWAKE.
+- **AWAKE** — 30s follow-up window. Each utterance is transcribed and routed directly. A spoken
+  reply resets the timer; silent (file) mode beeps per utterance. Timeout → LISTENING.
 
 ### Module Layout (`voice/`)
 
 | File | Role |
 |------|------|
-| `main.py` | Daemon entry point, signal handlers, state machine loop, config loading |
-| `recorder.py` | `AudioRecorder` — sounddevice InputStream + silero-vad for speech detection and audio buffering |
-| `wake_word.py` | `WakeWordDetector` — faster-whisper wrapper; transcribes audio, detects/strips "小九" with homophone fallback for "九" (酒/就/久/舅/救/旧) |
-| `stt.py` | `process_transcription()` — state-dependent text routing (LISTENING strips wake word, AWAKE passes through) |
-| `hermes_client.py` | `HermesClient` — httpx-based HTTP client for Hermes API Server (`/v1/chat/completions`), maintains multi-turn message context |
-| `tts.py` | `TTSEngine` — macOS AVSpeechSynthesizer via pyobjc, blocks until utterance finishes |
+| `main.py` | Daemon entry, signal handlers, state machine, config loading |
+| `av_recorder.py` | AVAudioEngine input + Silero VAD speech detection + AEC + barge-in detection |
+| `wake_word_engine.py` | Sherpa-ONNX KWS wake-word detection (multi-keyword) |
+| `stt_engine.py` | STT abstraction + factory (`stt_sensevoice.py`, `stt_whisper.py`) |
+| `models.py` | Model download/cache/convert (ModelScope / HuggingFace / local) |
+| `backend.py` | **Backend adapter layer**: `Backend` ABC (`prepare`/`handle`/`clear_context`/`close`) + `create_backend(config)` factory; implementations `HermesBackend`, `OpenAIBackend`, `FileBackend` |
+| `tts.py` | macOS AVSpeechSynthesizer (zh-CN), block-until-finished, interrupt callback |
 
 ### Key Design Details
 
-- **Wake word + STT reuse**: faster-whisper runs once per utterance. In LISTENING state the same transcription is used for both wake-word detection and command extraction (no second inference pass).
-- **VAD flow**: `silero-vad` runs in the audio callback thread. When speech starts, audio is buffered; when silence exceeds `silence_timeout` (1.5s), the full utterance is delivered to the main thread via a threading.Event.
-- **TTS echo avoidance**: `_speak_and_recover()` in main.py stops the audio stream before TTS, then restarts it with a 300ms drain delay to flush residual mic buffer.
-- **ConnectionError fallback**: if Hermes API is unreachable, says "请先启动 Hermes 服务" and returns to LISTENING.
-- **Model sources**: wake_word.py supports `huggingface` (default, lets faster-whisper handle download), `modelscope` (downloads from ModelScope, converts to CTranslate2), and `local` (pre-downloaded CTranslate2 directory).
-- **Multi-turn**: HermesClient accumulates messages[] across turns. `clear_context()` resets it on state timeout.
+- **Backend adapter = protocol + lifecycle.** `backend.handle(text) -> str | None`:
+  non-None = text to read aloud (chat), None = silent (file dictation → beep + append).
+  `backend.prepare()` runs at startup — `hermes` provisions `~/.hermes/.env` and ensures the
+  gateway (idempotent); `openai`/`file` mostly no-op. `BackendError` (fatal config, e.g. unwritable
+  file path) aborts startup; network/key problems warn and degrade at request time.
+- **One `backend:` block in config.yaml** selects the active backend. Legacy config (no block,
+  top-level `hermes_url`/`hermes_api_key`) still resolves to `hermes`.
+- **Key resolution** (openai family): `backend.api_key` → env named by `backend.api_key_env` →
+  `HERMES_API_KEY` → send NO auth header when empty. Cloud keys go in env vars, never in config.
+- **Silent branch in main**: `_handle_turn` routes every utterance; on backend failure it speaks a
+  neutral message and keeps the AWAKE window open (retry without re-waking); idle timeout returns
+  to LISTENING. File write failures speak the backend error text.
+- **Wake greeting** `wake_greeting` (default `"我在"`; empty string = beep only) — not a backend property.
+- **Path/CWD independence**: config and logs resolve from project root (`_project_root()`), so the
+  daemon runs from any working directory.
+- **Wake word + STT**: KWS runs in the audio callback thread on chunks; STT runs once per buffered
+  utterance delivered via threading.Event.
+- **VAD flow**: silero-vad in the audio callback; speech buffers, silence beyond `silence_timeout`
+  delivers the utterance.
+- **TTS barge-in**: `_speak_and_recover` arms the recorder's interrupt check during speech; short
+  pops (coughs < `bargein_duration`) don't trigger; recursive interrupts chain via
+  `_process_interruption`.
 
-### Configuration
+## Configuration
 
-`config.yaml` — session timeout, sample rate, VAD silence threshold, whisper model size, model source, Hermes API URL/key. API key can also come from `HERMES_API_KEY` env var.
+`config.yaml` — session timeout, samplerate, VAD params, `wake_greeting`, STT engine/model, wake
+words, `backend` block (type/base_url/model/api_key_env/timeout or file path), barge-in thresholds.
+See README "后端配置" for the three `backend` profiles.
 
-### Dependencies
+## Dependencies
 
-Python 3.12+, macOS 13+ (AVSpeechSynthesizer), Homebrew (portaudio), Hermes Gateway (running on localhost:8642).
+Python 3.12+, macOS 13+ (AVSpeechSynthesizer), Homebrew (portaudio), default backend Hermes
+(`hermes` CLI optional at runtime). Runtime deps in `requirements.txt`; test-only `pytest` in
+`requirements-dev.txt` (keep runtime deps out of `requirements-dev.txt`).
 
 ## Coding Guidelines
 

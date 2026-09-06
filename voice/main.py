@@ -19,7 +19,7 @@ from .wake_word_engine import WakeWordEngine
 from .backend import BackendError, create_backend
 from .tts import TTSEngine
 
-logger = logging.getLogger("hermes-voice")
+logger = logging.getLogger("harness-voice")
 
 # ANSI color codes
 _COLORS = {
@@ -145,7 +145,7 @@ def validate_config(cfg):
 def setup_logging():
     log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "hermes-voice.log")
+    log_file = os.path.join(log_dir, "harness-voice.log")
 
     # File handler: plain format with filename:lineno
     file_fmt = logging.Formatter(

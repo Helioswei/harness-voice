@@ -17,7 +17,7 @@ from pathlib import Path
 
 import httpx
 
-logger = logging.getLogger("hermes-voice")
+logger = logging.getLogger("harness-voice")
 
 
 class BackendError(Exception):

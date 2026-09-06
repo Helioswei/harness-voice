@@ -9,7 +9,7 @@ from pypinyin import pinyin, Style
 
 from .models import validate_model_files
 
-logger = logging.getLogger("hermes-voice")
+logger = logging.getLogger("harness-voice")
 
 
 def _generate_keywords_line(text):

@@ -3,7 +3,7 @@ import objc
 from Foundation import NSObject, NSRunLoop, NSDate
 import AVFoundation
 
-logger = logging.getLogger("hermes-voice")
+logger = logging.getLogger("harness-voice")
 
 
 class SpeechDelegate(NSObject):
