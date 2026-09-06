@@ -99,10 +99,10 @@ backend:
 其它示例（README/文档里给全配置块）：
 
 ```yaml
-# DeepSeek（云端真 key，走环境变量）
+# DeepSeek（云端真 key，走环境变量；base_url 只填 origin，不写 /v1）
 backend:
   type: openai
-  base_url: "https://api.deepseek.com/v1"
+  base_url: "https://api.deepseek.com"
   model: "deepseek-chat"
   api_key_env: "DEEPSEEK_API_KEY"
 ```
@@ -111,7 +111,7 @@ backend:
 # 本地已运行的 OpenAI 兼容服务（如 Ollama），无需 key → 不带 Authorization 头
 backend:
   type: openai
-  base_url: "http://localhost:11434/v1"
+  base_url: "http://localhost:11434"
   model: "llama3.2"
 ```
 
